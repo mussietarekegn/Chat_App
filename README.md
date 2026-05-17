@@ -23,9 +23,3 @@ A lightweight, multi-client desktop chat room built using **Java Swing** (GUI), 
 
 ---
 
-## 🚀 Installation & Setup Guide
-
-### 1. Database Configuration
-Open your local MySQL Workbench or command line instance and create your application database environment:
-```sql
-CREATE DATABASE chat_db;
