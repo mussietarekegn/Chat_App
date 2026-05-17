@@ -15,7 +15,6 @@ public class ChatClient extends JFrame {
     private JTextField inputField;
     private PrintWriter out;
 
-    // Attachment state
     private File pendingImageFile = null;
     private JLabel attachmentLabel;
     private JButton cancelAttachButton;
@@ -142,6 +141,7 @@ public class ChatClient extends JFrame {
         }
     }
 
+    // FIX: Wrapped interface updates in SwingUtilities to render loaded incoming images accurately
     private void handleIncoming(String msg) {
         try {
             if (msg.startsWith("IMAGE:")) {
@@ -165,19 +165,24 @@ public class ChatClient extends JFrame {
                 ImageIcon icon = new ImageIcon(scaled);
                 JLabel label = new JLabel(icon);
 
-                // FIX: Move cursor to the very end before adding the image
-                chatArea.setCaretPosition(chatArea.getDocument().getLength());
-                chatArea.insertComponent(label);
+                SwingUtilities.invokeLater(() -> {
+                    try {
+                        chatArea.setCaretPosition(chatArea.getDocument().getLength());
+                        chatArea.insertComponent(label);
 
-                // Add click listener to the image component
-                label.addMouseListener(new MouseAdapter() {
-                    @Override
-                    public void mouseClicked(MouseEvent e) {
-                        new ImageZoomer(img);
+                        label.addMouseListener(new MouseAdapter() {
+                            @Override
+                            public void mouseClicked(MouseEvent e) {
+                                new ImageZoomer(img);
+                            }
+                        });
+
+                        StyledDocument doc = chatArea.getStyledDocument();
+                        doc.insertString(doc.getLength(), "\n", null);
+                    } catch (Exception e) {
+                        e.printStackTrace();
                     }
                 });
-
-                appendText("\n");
             } else {
                 appendText(msg + "\n");
             }
@@ -186,16 +191,18 @@ public class ChatClient extends JFrame {
         }
     }
 
+    // FIX: Wrapped in SwingUtilities to display text rows cleanly during history spikes
     private void appendText(String text) {
-        try {
-            StyledDocument doc = chatArea.getStyledDocument();
-            doc.insertString(doc.getLength(), text, null);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        SwingUtilities.invokeLater(() -> {
+            try {
+                StyledDocument doc = chatArea.getStyledDocument();
+                doc.insertString(doc.getLength(), text, null);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
     }
 
-    // Inner class for image zooming
     class ImageZoomer extends JDialog {
         public ImageZoomer(BufferedImage image) {
             setTitle("Image Viewer");
@@ -211,7 +218,6 @@ public class ChatClient extends JFrame {
             closeButton.addActionListener(e -> dispose());
             add(closeButton, BorderLayout.SOUTH);
 
-            // Set a larger size but not full window
             setSize(400, 400);
             setLocationRelativeTo(ChatClient.this);
             setVisible(true);

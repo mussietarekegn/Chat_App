@@ -7,6 +7,7 @@ import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 import java.io.*;
 import java.net.*;
+import java.sql.*;
 import java.util.*;
 import java.util.Base64;
 
@@ -18,10 +19,11 @@ public class ChatServer extends JFrame {
     private JTextPane chatArea;
     private JTextField inputField;
 
-    // Attachment state
     private File pendingImageFile = null;
     private JLabel attachmentLabel;
     private JButton cancelAttachButton;
+
+    private static Connection conn = null;
 
     public ChatServer() {
         instance = this;
@@ -83,6 +85,82 @@ public class ChatServer extends JFrame {
         setVisible(true);
     }
 
+    // UPDATED: Now loads connection data securely from the config file
+    private static void initDatabase() {
+        Properties props = new Properties();
+        try (InputStream input = new FileInputStream("config.properties")) {
+            // Read the properties file
+            props.load(input);
+
+            String url = props.getProperty("db.url");
+            String username = props.getProperty("db.username");
+            String password = props.getProperty("db.password");
+
+            conn = DriverManager.getConnection(url, username, password);
+            Statement stat = conn.createStatement();
+
+            stat.executeUpdate("CREATE TABLE IF NOT EXISTS chat_logs (" +
+                    "id INT AUTO_INCREMENT PRIMARY KEY, " +
+                    "message LONGTEXT)");
+
+            System.out.println("MySQL Database connected successfully securely.");
+        } catch (FileNotFoundException e) {
+            System.out.println("ERROR: config.properties file is missing! Create it in your project root folder.");
+        } catch (Exception e) {
+            System.out.println("MySQL Connection failed!");
+            e.printStackTrace();
+        }
+    }
+
+    private static void saveToDatabase(String msg) {
+        if (conn == null) return;
+        try {
+            String sql = "INSERT INTO chat_logs (message) VALUES (?)";
+            PreparedStatement pstmt = conn.prepareStatement(sql);
+            pstmt.setString(1, msg);
+            pstmt.executeUpdate();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void loadLocalHistory() {
+        if (conn == null) return;
+        try {
+            Statement stat = conn.createStatement();
+            ResultSet rs = stat.executeQuery("SELECT message FROM chat_logs ORDER BY id ASC");
+
+            while (rs.next()) {
+                String msg = rs.getString("message");
+                if (msg.startsWith("IMAGE:")) {
+                    String base64 = msg.substring(6);
+                    byte[] bytes = Base64.getDecoder().decode(base64);
+                    BufferedImage img = ImageIO.read(new ByteArrayInputStream(bytes));
+                    displayImage(img);
+                } else {
+                    appendText(msg + "\n");
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void sendChatHistory(PrintWriter clientOut) {
+        if (conn == null) return;
+        try {
+            Statement stat = conn.createStatement();
+            ResultSet rs = stat.executeQuery("SELECT message FROM chat_logs ORDER BY id ASC");
+
+            while (rs.next()) {
+                String oldMsg = rs.getString("message");
+                clientOut.println(oldMsg);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
     private void attachImage() {
         JFileChooser chooser = new JFileChooser();
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
@@ -108,7 +186,9 @@ public class ChatServer extends JFrame {
                 ImageIO.write(img, "png", baos);
                 String base64 = Base64.getEncoder().encodeToString(baos.toByteArray());
 
-                broadcast("IMAGE:" + base64);
+                String rawImageProtocol = "IMAGE:" + base64;
+                broadcast(rawImageProtocol);
+                saveToDatabase(rawImageProtocol);
                 displayImage(img);
 
             } catch (Exception e) {
@@ -120,6 +200,7 @@ public class ChatServer extends JFrame {
         if (!msg.trim().isEmpty()) {
             String formattedMsg = "Server: " + msg;
             broadcast(formattedMsg);
+            saveToDatabase(formattedMsg);
             appendText(formattedMsg + "\n");
             inputField.setText("");
         }
@@ -134,51 +215,53 @@ public class ChatServer extends JFrame {
     }
 
     public void displayImage(BufferedImage img) {
-        try {
-            int maxDim = 150;
-            int width = img.getWidth();
-            int height = img.getHeight();
+        SwingUtilities.invokeLater(() -> {
+            try {
+                int maxDim = 150;
+                int width = img.getWidth();
+                int height = img.getHeight();
 
-            if (width > height) {
-                height = (height * maxDim) / width;
-                width = maxDim;
-            } else {
-                width = (width * maxDim) / height;
-                height = maxDim;
-            }
-
-            Image scaled = img.getScaledInstance(width, height, Image.SCALE_SMOOTH);
-            ImageIcon icon = new ImageIcon(scaled);
-            JLabel label = new JLabel(icon);
-
-            // FIX: Move cursor to the very end before adding the image
-            chatArea.setCaretPosition(chatArea.getDocument().getLength());
-            chatArea.insertComponent(label);
-
-            // Add click listener to the image component
-            label.addMouseListener(new MouseAdapter() {
-                @Override
-                public void mouseClicked(MouseEvent e) {
-                    new ImageZoomer(img);
+                if (width > height) {
+                    height = (height * maxDim) / width;
+                    width = maxDim;
+                } else {
+                    width = (width * maxDim) / height;
+                    height = maxDim;
                 }
-            });
 
-            appendText("\n");
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+                Image scaled = img.getScaledInstance(width, height, Image.SCALE_SMOOTH);
+                ImageIcon icon = new ImageIcon(scaled);
+                JLabel label = new JLabel(icon);
+
+                chatArea.setCaretPosition(chatArea.getDocument().getLength());
+                chatArea.insertComponent(label);
+
+                label.addMouseListener(new MouseAdapter() {
+                    @Override
+                    public void mouseClicked(MouseEvent e) {
+                        new ImageZoomer(img);
+                    }
+                });
+
+                StyledDocument doc = chatArea.getStyledDocument();
+                doc.insertString(doc.getLength(), "\n", null);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
     }
 
     public void appendText(String text) {
-        try {
-            StyledDocument doc = chatArea.getStyledDocument();
-            doc.insertString(doc.getLength(), text, null);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        SwingUtilities.invokeLater(() -> {
+            try {
+                StyledDocument doc = chatArea.getStyledDocument();
+                doc.insertString(doc.getLength(), text, null);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
     }
 
-    // Inner class for image zooming
     class ImageZoomer extends JDialog {
         public ImageZoomer(BufferedImage image) {
             setTitle("Image Viewer");
@@ -194,7 +277,6 @@ public class ChatServer extends JFrame {
             closeButton.addActionListener(e -> dispose());
             add(closeButton, BorderLayout.SOUTH);
 
-            // Set a larger size but not full window
             setSize(400, 400);
             setLocationRelativeTo(ChatServer.this);
             setVisible(true);
@@ -202,7 +284,10 @@ public class ChatServer extends JFrame {
     }
 
     public static void main(String[] args) {
+        initDatabase();
+
         ChatServer gui = new ChatServer();
+        gui.loadLocalHistory();
 
         try (ServerSocket serverSocket = new ServerSocket(12345)) {
             gui.appendText("Server running...\n");
@@ -210,6 +295,8 @@ public class ChatServer extends JFrame {
             while (true) {
                 Socket socket = serverSocket.accept();
                 PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+
+                gui.sendChatHistory(out);
 
                 synchronized (clients) {
                     clients.add(out);
@@ -223,6 +310,7 @@ public class ChatServer extends JFrame {
                         while ((msg = in.readLine()) != null) {
                             if (msg.startsWith("IMAGE:")) {
                                 broadcast(msg);
+                                saveToDatabase(msg);
 
                                 String base64 = msg.substring(6);
                                 byte[] bytes = Base64.getDecoder().decode(base64);
@@ -230,6 +318,7 @@ public class ChatServer extends JFrame {
                                 gui.displayImage(img);
                             } else {
                                 broadcast(msg);
+                                saveToDatabase(msg);
                                 gui.appendText(msg + "\n");
                             }
                         }
